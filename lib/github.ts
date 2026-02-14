@@ -1,68 +1,54 @@
 import crypto from 'node:crypto';
+import { env } from './env';
+import {
+  CreateRegistryPullRequestInput,
+  PullRequestResult,
+  OAuthAccessTokenResponse,
+  GitHubUserResponse,
+  GitHubUserProfile,
+  GitRefResponse,
+  SHA,
+  GitTreeResponse,
+  PullRequestResponse,
+} from './types';
+import { HttpError } from './http';
+import { HttpClient } from './http-client';
 
-type GitHubRequestOptions = {
-  method?: 'GET' | 'POST' | 'PATCH';
-  token: string;
-  body?: unknown;
-};
+const githubApiClient = (token: string) =>
+  new HttpClient({
+    baseUrl: env.GITHUB_API_BASE_URL,
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    onError: (error) => {
+      if (error.originalError?.status === 403) {
+        return new HttpError(
+          'GitHub API rate limit exceeded or token is invalid.',
+          502
+        );
+      }
+      return new HttpError(`GitHub API request failed: ${error}`, 502);
+    },
+  });
 
-type CreateRegistryPullRequestInput = {
-  owner: string;
-  repo: string;
-  baseBranch: string;
-  skillName: string;
-  skillRootDir: string;
-  files: Array<{
-    path: string;
-    contentBase64: string;
-  }>;
-  submittedBy: string;
-};
-
-type PullRequestResult = {
-  pullRequestUrl: string;
-  pullRequestNumber: number;
-  branchName: string;
-};
-
-type OAuthAccessTokenResponse = {
-  access_token?: string;
-  token_type?: string;
-  scope?: string;
-  error?: string;
-  error_description?: string;
-};
-
-type GitHubUserResponse = {
-  login: string;
-};
-
-class GitHubError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly details: string
-  ) {
-    super(message);
-  }
-}
-
-function requiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`Missing required environment variable '${name}'.`);
-  }
-
-  return value;
-}
+const githubOAuthApiClient = new HttpClient({
+  baseUrl: env.GITHUB_OAUTH_BASE_URL,
+  headers: {
+    Accept: 'application/json',
+    'Content-Type': 'application/x-www-form-urlencoded',
+  },
+});
 
 function toBase64UrlJson(value: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
 function createGitHubAppJwt(): string {
-  const appId = requiredEnv('GITHUB_APP_ID');
-  const privateKeyRaw = requiredEnv('GITHUB_APP_PRIVATE_KEY');
+  const appId = env.GITHUB_APP_ID;
+  const privateKeyRaw = env.GITHUB_APP_PRIVATE_KEY;
   const privateKey = privateKeyRaw.replace(/\\n/g, '\n');
 
   const now = Math.floor(Date.now() / 1000);
@@ -89,80 +75,35 @@ function createGitHubAppJwt(): string {
   return `${signingInput}.${signature}`;
 }
 
-function githubApiBaseUrl(): string {
-  return process.env.GITHUB_API_BASE_URL?.trim() || 'https://api.github.com';
-}
+export async function exchangeOAuthCodeForAccessToken(
+  code: string
+): Promise<string> {
+  const data = await githubOAuthApiClient.post<OAuthAccessTokenResponse>(
+    '/access_token',
+    {
+      client_id: env.GITHUB_APP_CLIENT_ID,
+      client_secret: env.GITHUB_APP_CLIENT_SECRET,
+      code,
+      redirect_uri: `${env.APP_BASE_URL}/api/v1/auth/callback`,
+    }
+  );
 
-async function githubApiRequest<T>(pathname: string, options: GitHubRequestOptions): Promise<T> {
-  const response = await fetch(`${githubApiBaseUrl()}${pathname}`, {
-    method: options.method ?? 'GET',
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${options.token}`,
-      'Content-Type': 'application/json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
-
-  const raw = await response.text();
-
-  if (!response.ok) {
-    throw new GitHubError(
-      `GitHub API request failed: ${pathname}`,
-      response.status,
-      raw || response.statusText
+  if (!data.access_token) {
+    throw new HttpError(
+      data.error_description ||
+        data.error ||
+        'Failed to exchange OAuth code for access token.',
+      502
     );
   }
 
-  if (!raw) {
-    return {} as T;
-  }
-
-  return JSON.parse(raw) as T;
+  return data.access_token;
 }
 
-function authRedirectUrl(): string {
-  const appBaseUrl = requiredEnv('APP_BASE_URL').replace(/\/$/, '');
-  return `${appBaseUrl}/api/v1/auth/callback`;
-}
-
-export function buildGitHubAuthorizeUrl(state: string): string {
-  const url = new URL('https://github.com/login/oauth/authorize');
-  url.searchParams.set('client_id', requiredEnv('GITHUB_APP_CLIENT_ID'));
-  url.searchParams.set('redirect_uri', authRedirectUrl());
-  url.searchParams.set('scope', 'read:user');
-  url.searchParams.set('state', state);
-  return url.toString();
-}
-
-export async function exchangeOAuthCodeForAccessToken(code: string): Promise<string> {
-  const form = new URLSearchParams();
-  form.set('client_id', requiredEnv('GITHUB_APP_CLIENT_ID'));
-  form.set('client_secret', requiredEnv('GITHUB_APP_CLIENT_SECRET'));
-  form.set('code', code);
-  form.set('redirect_uri', authRedirectUrl());
-
-  const response = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: form.toString(),
-  });
-
-  const body = (await response.json()) as OAuthAccessTokenResponse;
-
-  if (!response.ok || !body.access_token) {
-    throw new Error(body.error_description || body.error || 'Failed to exchange OAuth code for token.');
-  }
-
-  return body.access_token;
-}
-
-export async function fetchGitHubLogin(oauthAccessToken: string): Promise<string> {
-  const response = await fetch(`${githubApiBaseUrl()}/user`, {
+export async function fetchGitHubUserProfile(
+  oauthAccessToken: string
+): Promise<GitHubUserProfile> {
+  const response = await fetch(`${env.GITHUB_API_BASE_URL}/user`, {
     method: 'GET',
     headers: {
       Accept: 'application/vnd.github+json',
@@ -173,7 +114,9 @@ export async function fetchGitHubLogin(oauthAccessToken: string): Promise<string
 
   const raw = await response.text();
   if (!response.ok) {
-    throw new Error(`Failed to fetch GitHub user profile (${response.status}): ${raw}`);
+    throw new Error(
+      `Failed to fetch GitHub user profile (${response.status}): ${raw}`
+    );
   }
 
   const profile = JSON.parse(raw) as GitHubUserResponse;
@@ -181,56 +124,72 @@ export async function fetchGitHubLogin(oauthAccessToken: string): Promise<string
     throw new Error('GitHub user response did not include login.');
   }
 
-  return profile.login;
+  return {
+    username: profile.login,
+    id: profile.id,
+    nodeId: profile.node_id,
+    email: profile.email,
+    notificationEmail: profile.notification_email,
+    name: profile.name,
+    avatarUrl: profile.avatar_url,
+    htmlUrl: profile.html_url,
+    bio: profile.bio,
+    location: profile.location,
+  };
 }
 
-async function resolveInstallationId(owner: string, repo: string, appJwt: string): Promise<number> {
-  const envInstallationId = process.env.GITHUB_APP_INSTALLATION_ID?.trim();
+async function resolveInstallationId(
+  owner: string,
+  repo: string,
+  appJwt: string
+): Promise<number> {
+  const envInstallationId = env.GITHUB_APP_INSTALLATION_ID;
   if (envInstallationId) {
-    const parsed = Number.parseInt(envInstallationId, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      throw new Error("'GITHUB_APP_INSTALLATION_ID' must be a positive integer.");
-    }
-
-    return parsed;
+    return envInstallationId;
   }
 
-  const installation = await githubApiRequest<{ id: number }>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
-    {
-      token: appJwt,
-    }
+  // Construct the API path for the repository.
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repo);
+  const installationPath = `/repos/${encodedOwner}/${encodedRepo}/installation`;
+
+  const installation = await githubApiClient(appJwt).get<{ id: number }>(
+    installationPath
   );
 
   if (!installation.id) {
-    throw new Error('Unable to resolve GitHub App installation for target repository.');
+    throw new HttpError(
+      'Unable to resolve GitHub App installation for target repository.',
+      502
+    );
   }
 
   return installation.id;
 }
 
-async function createInstallationToken(owner: string, repo: string): Promise<string> {
+async function createInstallationToken(
+  owner: string,
+  repo: string
+): Promise<string> {
   const appJwt = createGitHubAppJwt();
   const installationId = await resolveInstallationId(owner, repo, appJwt);
 
-  const tokenResponse = await githubApiRequest<{ token: string }>(
-    `/app/installations/${installationId}/access_tokens`,
-    {
-      method: 'POST',
-      token: appJwt,
-      body: {},
-    }
+  const tokenResponse = await githubApiClient(appJwt).post<{ token: string }>(
+    `/app/installations/${installationId}/access_tokens`
   );
 
   if (!tokenResponse.token) {
-    throw new Error('Failed to create installation access token.');
+    throw new HttpError('Failed to create installation access token.', 502);
   }
 
   return tokenResponse.token;
 }
 
 function createBranchName(skillName: string): string {
-  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:.TZ]/g, '')
+    .slice(0, 14);
   const suffix = crypto.randomBytes(3).toString('hex');
   return `enskill/${skillName}/${stamp}-${suffix}`;
 }
@@ -238,48 +197,59 @@ function createBranchName(skillName: string): string {
 export async function createRegistryPullRequest(
   input: CreateRegistryPullRequestInput
 ): Promise<PullRequestResult> {
-  const installationToken = await createInstallationToken(input.owner, input.repo);
+  const {
+    owner,
+    repo,
+    baseBranch,
+    skillName,
+    skillRootDir,
+    files,
+    submittedBy,
+  } = input;
 
-  const baseRef = await githubApiRequest<{ object: { sha: string } }>(
-    `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/git/ref/heads/${encodeURIComponent(input.baseBranch)}`,
-    {
-      token: installationToken,
-    }
+  // Encode the owner and repo names for use in the API path.
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repo);
+  const encodedBaseBranch = encodeURIComponent(baseBranch);
+  // Create the branch name.
+  const branchName = createBranchName(skillName);
+
+  // Construct the API path for the repository.
+  const repoPath = `/repos/${encodedOwner}/${encodedRepo}`;
+
+  const installationToken = await createInstallationToken(owner, repo);
+
+  // Fetch the base branch reference.
+  const baseRef = await githubApiClient(installationToken).get<GitRefResponse>(
+    `${repoPath}/git/ref/heads/${encodedBaseBranch}`
   );
-
   const baseCommitSha = baseRef.object?.sha;
   if (!baseCommitSha) {
-    throw new Error('Could not resolve base branch SHA for publish.');
+    throw new HttpError('Could not resolve base branch SHA for publish.', 502);
   }
 
-  const baseCommit = await githubApiRequest<{ tree: { sha: string } }>(
-    `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/git/commits/${baseCommitSha}`,
-    {
-      token: installationToken,
-    }
-  );
-
+  // Fetch the base commit.
+  const baseCommit = await githubApiClient(
+    installationToken
+  ).get<GitTreeResponse>(`${repoPath}/git/commits/${baseCommitSha}`);
   const baseTreeSha = baseCommit.tree?.sha;
   if (!baseTreeSha) {
-    throw new Error('Could not resolve base tree SHA for publish.');
+    throw new HttpError('Could not resolve base tree SHA for publish.', 502);
   }
 
+  // Create the tree entries for the files.
   const treeEntries = await Promise.all(
-    input.files.map(async (file) => {
-      const blob = await githubApiRequest<{ sha: string }>(
-        `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/git/blobs`,
+    files.map(async (file) => {
+      const blob = await githubApiClient(installationToken).post<SHA>(
+        `${repoPath}/git/blobs`,
         {
-          method: 'POST',
-          token: installationToken,
-          body: {
-            content: file.contentBase64,
-            encoding: 'base64',
-          },
+          content: file.contentBase64,
+          encoding: 'base64',
         }
       );
 
       return {
-        path: `${input.skillRootDir}/${input.skillName}/${file.path}`,
+        path: `${skillRootDir}/${skillName}/${file.path}`,
         mode: '100644',
         type: 'blob',
         sha: blob.sha,
@@ -287,63 +257,42 @@ export async function createRegistryPullRequest(
     })
   );
 
-  const tree = await githubApiRequest<{ sha: string }>(
-    `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/git/trees`,
+  // Create the tree.
+  const tree = await githubApiClient(installationToken).post<SHA>(
+    `${repoPath}/git/trees`,
+    { base_tree: baseTreeSha, tree: treeEntries }
+  );
+
+  // Create the commit.
+  const commit = await githubApiClient(installationToken).post<SHA>(
+    `${repoPath}/git/commits`,
     {
-      method: 'POST',
-      token: installationToken,
-      body: {
-        base_tree: baseTreeSha,
-        tree: treeEntries,
-      },
+      message: `feat(registry): publish skill ${skillName}`,
+      tree: tree.sha,
+      parents: [baseCommitSha],
     }
   );
 
-  const commit = await githubApiRequest<{ sha: string }>(
-    `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/git/commits`,
-    {
-      method: 'POST',
-      token: installationToken,
-      body: {
-        message: `feat(registry): publish skill ${input.skillName}`,
-        tree: tree.sha,
-        parents: [baseCommitSha],
-      },
-    }
-  );
+  // Create the branch reference.
+  await githubApiClient(installationToken).post(`${repoPath}/git/refs`, {
+    ref: `refs/heads/${branchName}`,
+    sha: commit.sha,
+  });
 
-  const branchName = createBranchName(input.skillName);
-
-  await githubApiRequest(
-    `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/git/refs`,
-    {
-      method: 'POST',
-      token: installationToken,
-      body: {
-        ref: `refs/heads/${branchName}`,
-        sha: commit.sha,
-      },
-    }
-  );
-
-  const pullRequest = await githubApiRequest<{ number: number; html_url: string }>(
-    `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/pulls`,
-    {
-      method: 'POST',
-      token: installationToken,
-      body: {
-        title: `Add skill: ${input.skillName}`,
-        head: branchName,
-        base: input.baseBranch,
-        body: [
-          `Submitted via enskill by @${input.submittedBy}.`,
-          '',
-          `Skill: \`${input.skillName}\``,
-          `Path: \`${input.skillRootDir}/${input.skillName}\``,
-        ].join('\n'),
-      },
-    }
-  );
+  // Create the pull request.
+  const pullRequest = await githubApiClient(
+    installationToken
+  ).post<PullRequestResponse>(`${repoPath}/pulls`, {
+    title: `Add skill: ${skillName}`,
+    head: branchName,
+    base: baseBranch,
+    body: [
+      `Submitted via enskill by @${submittedBy}.`,
+      '',
+      `Skill: \`${skillName}\``,
+      `Path: \`${skillRootDir}/${skillName}\``,
+    ].join('\n'),
+  });
 
   return {
     pullRequestUrl: pullRequest.html_url,
@@ -351,5 +300,3 @@ export async function createRegistryPullRequest(
     branchName,
   };
 }
-
-export { GitHubError };

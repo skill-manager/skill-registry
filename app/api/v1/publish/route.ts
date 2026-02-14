@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAccessSession } from '@/lib/auth-store';
+
 import { parsePublishRequest } from '@/lib/contracts';
-import { createRegistryPullRequest, GitHubError } from '@/lib/github';
-import { getBearerToken, jsonError } from '@/lib/http';
+import { createRegistryPullRequest } from '@/lib/github';
+import { getBearerToken } from '@/lib/utils';
+import { HttpError, jsonError, jsonResponse, readBody } from '@/lib/http';
+import { redis } from '@/lib/redis';
+import { DeviceAuthSession } from '@/lib/types';
 
 export const runtime = 'nodejs';
 
@@ -10,28 +13,31 @@ function skillsRootDirectory(): string {
   return process.env.REGISTRY_SKILLS_DIR?.trim() || 'skills';
 }
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
-  const accessToken = getBearerToken(request.headers.get('authorization'));
-  const accessSession = getAccessSession(accessToken);
+interface PublishRequestPayload {
+  foo: 'bar';
+}
 
-  if (!accessSession) {
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const deviceToken = getBearerToken(request.headers.get('authorization'));
+
+  if (!deviceToken) {
     return jsonError('Unauthorized', 401);
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonError('Request body must be valid JSON.', 400);
+  const sessionRaw = await redis.get(`session:${deviceToken}`);
+
+  if (!sessionRaw) {
+    return jsonError('Unauthorized', 401);
+  }
+  const session = JSON.parse(sessionRaw) as DeviceAuthSession;
+
+  if (session.status !== 'approved') {
+    return jsonError('Unauthorized', 401);
   }
 
-  let publishRequest;
-  try {
-    publishRequest = parsePublishRequest(body);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Invalid publish request.';
-    return jsonError(message, 400);
-  }
+  const requestPayload = await readBody<PublishRequestPayload>(request);
+
+  const publishRequest = parsePublishRequest(requestPayload);
 
   try {
     const result = await createRegistryPullRequest({
@@ -44,17 +50,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         path: file.path,
         contentBase64: file.content,
       })),
-      submittedBy: accessSession.githubLogin,
+      submittedBy: session.githubUsername,
     });
 
-    return NextResponse.json(result);
+    return jsonResponse(result);
   } catch (error) {
-    if (error instanceof GitHubError) {
-      const status = error.status >= 400 && error.status < 500 ? 502 : 500;
-      return jsonError(`GitHub publish failed (${error.status}): ${error.details}`, status);
+    if (error instanceof HttpError) {
+      return jsonError(error.message, error.status);
     }
 
-    const message = error instanceof Error ? error.message : 'Failed to create publish PR.';
+    const message =
+      error instanceof Error ? error.message : 'Failed to create publish PR.';
     return jsonError(message, 500);
   }
 }
