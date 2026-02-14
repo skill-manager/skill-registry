@@ -6,8 +6,6 @@ import {
 import { redis } from '@/lib/redis';
 import { htmlResponse } from '@/lib/http';
 import { DeviceUnapprovedAuthSession } from '@/lib/types';
-// import { usersTable } from '@/db/schema';
-// import { db } from '@/db';
 
 export const runtime = 'nodejs';
 
@@ -69,31 +67,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         400
       );
     }
-
-    // // Create the user in our platform's database
-    // const user = await db.insert(usersTable).values({
-    //   email: githubProfile.email,
-    //   name: githubProfile.name,
-
-    //   githubUsername: githubProfile.username,
-    //   githubId: githubProfile.id,
-    //   githubNodeId: githubProfile.nodeId,
-    //   githubAvatarUrl: githubProfile.avatarUrl,
-    //   githubHtmlUrl: githubProfile.htmlUrl,
-
-    //   githubNotificationEmail: githubProfile.notificationEmail,
-    //   githubBio: githubProfile.bio,
-    //   githubLocation: githubProfile.location,
-    // }).returning().then(result => result[0]);
-
-    // if (!user) {
-    //   return htmlResponse(
-    //     'Authentication failed',
-    //     'Failed to create user. Please try again.',
-    //     '#c43d2e',
-    //     500
-    //   );
-    // }
 
     // Approve the user's session for the next 10 minutes
     const pendingSession = JSON.parse(

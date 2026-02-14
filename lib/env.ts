@@ -1,9 +1,15 @@
 import { z } from 'zod';
 
+let count = 0;
+
 export const env = z
   .object({
     // App
-    APP_BASE_URL: z.string(),
+    APP_BASE_URL: z.string().default('https://registry.enskill.space'),
+
+    // GitHub API
+    GITHUB_API_BASE_URL: z.string().default('https://api.github.com'),
+    GITHUB_OAUTH_BASE_URL: z.string().default('https://github.com/login/oauth'),
 
     // GitHub App
     GITHUB_APP_CLIENT_ID: z.string(),
@@ -15,14 +21,13 @@ export const env = z
       .transform((val) => Number.parseInt(val, 10))
       .optional(),
 
-    // GitHub API
-    GITHUB_API_BASE_URL: z.string().default('https://api.github.com'),
-    GITHUB_OAUTH_BASE_URL: z.string().default('https://github.com/login/oauth'),
-
     // Redis
     REDIS_URL: z.string(),
-
-    // Database
-    DATABASE_URL: z.string(),
   })
-  .safeParse(process.env).data!;
+  .safeParse(
+    (() => {
+      console.log('Parsing Environment Variables...', count);
+      count++;
+      return process.env;
+    })()
+  ).data!;
