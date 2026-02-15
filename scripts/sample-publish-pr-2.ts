@@ -225,13 +225,7 @@ async function main(): Promise<void> {
     }
   );
 
-  console.log(pullRequest);
-
-  // console.log('');
-  // console.log('Pull request created:');
-  // console.log(`- URL: ${result.pullRequestUrl}`);
-  // console.log(`- Number: ${result.pullRequestNumber}`);
-  // console.log(`- Branch: ${result.branchName}`);
+  // console.log(pullRequest);
 }
 
 main().catch((error) => {

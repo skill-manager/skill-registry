@@ -4,7 +4,7 @@ export default function Home() {
       Nothing interesting here... Go to{' '}
       <a href='https://enskill.space' target='_blank' rel='noopener noreferrer'>
         https://enskill.space
-      </a>
+      </a>{' '}
       for the fun stuff.
     </div>
   );
