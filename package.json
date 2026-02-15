@@ -6,11 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "installation-id": "tsx ./scripts/get-installation-id.ts",
+    "sample-publish-pr": "tsx ./scripts/sample-publish-pr.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
     "drizzle-orm": "^0.45.1",
+    "github-app-auth-kit": "^0.0.6",
     "ioredis": "^5.9.3",
     "next": "16.1.6",
     "react": "19.2.3",
@@ -22,9 +25,11 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^16.4.5",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
+    "tsx": "^4.20.0",
     "typescript": "^5"
   }
 }

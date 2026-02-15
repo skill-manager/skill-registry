@@ -1,9 +1,16 @@
 import path from 'node:path';
+import { brotliDecompressSync } from 'node:zlib';
 import { HttpError } from './http';
 
 export type PublishFilePayload = {
   path: string;
   encoding: 'base64';
+  content: string;
+};
+
+export type PublishArchivePayload = {
+  encoding: 'base64';
+  compression: 'brotli';
   content: string;
 };
 
@@ -15,7 +22,7 @@ export type PublishRequestPayload = {
   };
   skill: {
     name: string;
-    files: PublishFilePayload[];
+    archive: PublishArchivePayload;
   };
 };
 
@@ -32,6 +39,7 @@ export type NormalizedPublishRequest = {
 };
 
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const PUBLISH_ARCHIVE_VERSION = 1;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -71,6 +79,91 @@ function normalizeRelativePath(inputPath: string): string {
   return normalized;
 }
 
+function normalizeFilesPayload(filesValue: unknown, fieldName: string): PublishFilePayload[] {
+  if (!Array.isArray(filesValue) || filesValue.length === 0) {
+    throw new Error(`'${fieldName}' must be a non-empty array.`);
+  }
+
+  return filesValue.map((entry, index) => {
+    if (!isRecord(entry)) {
+      throw new Error(`${fieldName}[${index}] must be an object.`);
+    }
+
+    const entryPath = normalizeRelativePath(
+      expectString(entry.path, `${fieldName}[${index}].path`)
+    );
+    const encoding = expectString(
+      entry.encoding,
+      `${fieldName}[${index}].encoding`
+    );
+    if (encoding !== 'base64') {
+      throw new Error(`${fieldName}[${index}].encoding must be 'base64'.`);
+    }
+
+    const content = expectString(
+      entry.content,
+      `${fieldName}[${index}].content`
+    );
+
+    return {
+      path: entryPath,
+      encoding: 'base64',
+      content,
+    };
+  });
+}
+
+function parseArchivePayload(archiveValue: unknown): PublishFilePayload[] {
+  if (!isRecord(archiveValue)) {
+    throw new Error("'skill.archive' must be an object.");
+  }
+
+  const encoding = expectString(archiveValue.encoding, 'skill.archive.encoding');
+  if (encoding !== 'base64') {
+    throw new Error("'skill.archive.encoding' must be 'base64'.");
+  }
+
+  const compression = expectString(
+    archiveValue.compression,
+    'skill.archive.compression'
+  );
+  if (compression !== 'brotli') {
+    throw new Error("'skill.archive.compression' must be 'brotli'.");
+  }
+
+  const content = expectString(archiveValue.content, 'skill.archive.content');
+
+  let archiveJson = '';
+  try {
+    const compressed = Buffer.from(content, 'base64');
+    const decompressed = brotliDecompressSync(compressed);
+    archiveJson = decompressed.toString('utf8');
+  } catch {
+    throw new Error(
+      "'skill.archive.content' must be valid base64 brotli-compressed JSON."
+    );
+  }
+
+  let parsedArchive: unknown;
+  try {
+    parsedArchive = JSON.parse(archiveJson);
+  } catch {
+    throw new Error("'skill.archive.content' did not decode to valid JSON.");
+  }
+
+  if (!isRecord(parsedArchive)) {
+    throw new Error("'skill.archive.content' did not decode to a JSON object.");
+  }
+
+  if (parsedArchive.version !== PUBLISH_ARCHIVE_VERSION) {
+    throw new Error(
+      `'skill.archive.version' must be ${PUBLISH_ARCHIVE_VERSION}.`
+    );
+  }
+
+  return normalizeFilesPayload(parsedArchive.files, 'skill.archive.files');
+}
+
 export function parsePublishRequest(
   payload: unknown
 ): NormalizedPublishRequest {
@@ -103,42 +196,11 @@ export function parsePublishRequest(
       );
     }
 
-    const filesValue = skillValue.files;
-    if (!Array.isArray(filesValue) || filesValue.length === 0) {
-      throw new Error("'skill.files' must be a non-empty array.");
-    }
-
-    const files: PublishFilePayload[] = filesValue.map((entry, index) => {
-      if (!isRecord(entry)) {
-        throw new Error(`skill.files[${index}] must be an object.`);
-      }
-
-      const entryPath = normalizeRelativePath(
-        expectString(entry.path, `skill.files[${index}].path`)
-      );
-      const encoding = expectString(
-        entry.encoding,
-        `skill.files[${index}].encoding`
-      );
-      if (encoding !== 'base64') {
-        throw new Error(`skill.files[${index}].encoding must be 'base64'.`);
-      }
-
-      const content = expectString(
-        entry.content,
-        `skill.files[${index}].content`
-      );
-
-      return {
-        path: entryPath,
-        encoding: 'base64',
-        content,
-      };
-    });
+    const files = parseArchivePayload(skillValue.archive);
 
     const hasSkillFile = files.some((file) => file.path === 'SKILL.md');
     if (!hasSkillFile) {
-      throw new Error("skill.files must include 'SKILL.md'.");
+      throw new Error("skill.archive.files must include 'SKILL.md'.");
     }
 
     return {

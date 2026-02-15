@@ -138,44 +138,11 @@ export async function fetchGitHubUserProfile(
   };
 }
 
-async function resolveInstallationId(
-  owner: string,
-  repo: string,
-  appJwt: string
-): Promise<number> {
-  const envInstallationId = env.GITHUB_APP_INSTALLATION_ID;
-  if (envInstallationId) {
-    return envInstallationId;
-  }
-
-  // Construct the API path for the repository.
-  const encodedOwner = encodeURIComponent(owner);
-  const encodedRepo = encodeURIComponent(repo);
-  const installationPath = `/repos/${encodedOwner}/${encodedRepo}/installation`;
-
-  const installation = await githubApiClient(appJwt).get<{ id: number }>(
-    installationPath
-  );
-
-  if (!installation.id) {
-    throw new HttpError(
-      'Unable to resolve GitHub App installation for target repository.',
-      502
-    );
-  }
-
-  return installation.id;
-}
-
-async function createInstallationToken(
-  owner: string,
-  repo: string
-): Promise<string> {
+async function createInstallationToken(): Promise<string> {
   const appJwt = createGitHubAppJwt();
-  const installationId = await resolveInstallationId(owner, repo, appJwt);
 
   const tokenResponse = await githubApiClient(appJwt).post<{ token: string }>(
-    `/app/installations/${installationId}/access_tokens`
+    `/app/installations/${env.GITHUB_APP_INSTALLATION_ID}/access_tokens`
   );
 
   if (!tokenResponse.token) {
@@ -217,7 +184,7 @@ export async function createRegistryPullRequest(
   // Construct the API path for the repository.
   const repoPath = `/repos/${encodedOwner}/${encodedRepo}`;
 
-  const installationToken = await createInstallationToken(owner, repo);
+  const installationToken = await createInstallationToken();
 
   // Fetch the base branch reference.
   const baseRef = await githubApiClient(installationToken).get<GitRefResponse>(
