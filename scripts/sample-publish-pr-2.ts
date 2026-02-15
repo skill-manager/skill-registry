@@ -18,12 +18,6 @@ type PullRequestResponse = {
   html_url: string;
 };
 
-type PullRequestResult = {
-  pullRequestUrl: string;
-  pullRequestNumber: number;
-  branchName: string;
-};
-
 type File = {
   path: string;
   contentBase64: string;
@@ -32,7 +26,7 @@ type File = {
 const GITHUB_API_BASE_URL = 'https://api.github.com';
 const GITHUB_INSTALLATION_TOKEN = process.env.TEMP_GITHUB_INSTALLATION_TOKEN!;
 const OWNER = 'skill-manager';
-const REPO = 'skills-registry';
+const REPO = 'skill-registry';
 const BASE_BRANCH = 'main';
 const SKILL_NAME = 'demo-hardcoded-skill';
 const SKILL_ROOT_DIR = 'skills';
@@ -80,7 +74,9 @@ async function githubApiRequest<T>(
   path: string,
   body?: unknown
 ): Promise<T> {
-  const response = await fetch(`${GITHUB_API_BASE_URL}${path}`, {
+  const url = `${GITHUB_API_BASE_URL}${path}`;
+  console.log(`GitHub API ${method} ${url}`);
+  const response = await fetch(url, {
     method,
     headers: {
       Accept: 'application/vnd.github+json',
@@ -119,95 +115,117 @@ async function main(): Promise<void> {
 
   const installationToken = GITHUB_INSTALLATION_TOKEN;
 
+  // Get a reference to the base branch.
   const baseRef = await githubApiRequest<GitRefResponse>(
     installationToken,
     'GET',
     `${repoPath}/git/ref/heads/${encodedBaseBranch}`
   );
 
-  console.log(baseRef);
+  // console.log(baseRef);
 
-  // const baseCommitSha = baseRef.object?.sha;
-  // if (!baseCommitSha) {
-  //   throw new Error('Could not resolve base branch SHA for publish.');
-  // }
+  // Pull out the SHA of the base branch's latest commit.
+  const baseCommitSha = baseRef.object?.sha;
+  if (!baseCommitSha) {
+    throw new Error('Could not resolve base branch SHA for publish.');
+  }
 
-  // const baseCommit = await githubApiRequest<GitTreeResponse>(
-  //   installationToken,
-  //   'GET',
-  //   `${repoPath}/git/commits/${baseCommitSha}`
-  // );
+  // Get the base branch's latest commit object using the commit SHA.
+  const baseCommit = await githubApiRequest<GitTreeResponse>(
+    installationToken,
+    'GET',
+    `${repoPath}/git/commits/${baseCommitSha}`
+  );
 
-  // const baseTreeSha = baseCommit.tree?.sha;
-  // if (!baseTreeSha) {
-  //   throw new Error('Could not resolve base tree SHA for publish.');
-  // }
+  // console.log(baseCommit);
 
-  // const treeEntries = await Promise.all(
-  //   files.map(async (file) => {
-  //     const blob = await githubApiRequest<SHA>(
-  //       installationToken,
-  //       'POST',
-  //       `${repoPath}/git/blobs`,
-  //       {
-  //         content: file.contentBase64,
-  //         encoding: 'base64',
-  //       }
-  //     );
+  // Pull out the SHA of the base branch's latest commit's tree.
+  // This will be used as the base tree for the new commit.
+  // The tree is more like the structure/map of files and directories paths pointing to blobs SHA.
+  const baseTreeSha = baseCommit.tree?.sha;
+  if (!baseTreeSha) {
+    throw new Error('Could not resolve base tree SHA for publish.');
+  }
 
-  //     return {
-  //       path: `${skillRootDir}/${skillName}/${file.path}`,
-  //       mode: '100644',
-  //       type: 'blob',
-  //       sha: blob.sha,
-  //     };
-  //   })
-  // );
+  // Create the blob entries for all the files in the skill on GitHub and get their SHA.
+  // Basically upload the files and get the IDs pointing to them.
+  const treeEntries = await Promise.all(
+    FILES.map(async (file) => {
+      const blob = await githubApiRequest<SHA>(
+        installationToken,
+        'POST',
+        `${repoPath}/git/blobs`,
+        {
+          content: file.contentBase64,
+          encoding: 'base64',
+        }
+      );
 
-  // const tree = await githubApiRequest<SHA>(
-  //   installationToken,
-  //   'POST',
-  //   `${repoPath}/git/trees`,
-  //   { base_tree: baseTreeSha, tree: treeEntries }
-  // );
+      // console.log('RAN SUCCESSFULLY:', file.path);
+      // console.log(JSON.stringify(blob, null, 2));
 
-  // const commit = await githubApiRequest<SHA>(
-  //   installationToken,
-  //   'POST',
-  //   `${repoPath}/git/commits`,
-  //   {
-  //     message: `feat(registry): publish skill ${skillName}`,
-  //     tree: tree.sha,
-  //     parents: [baseCommitSha],
-  //   }
-  // );
+      // Pull out the SHA of each blob.
+      // This will be used to create the new tree entries.
+      return {
+        path: `${SKILL_ROOT_DIR}/${SKILL_NAME}/${file.path}`,
+        mode: '100644',
+        type: 'blob',
+        sha: blob.sha,
+      };
+    })
+  );
 
-  // await githubApiRequest(
-  //   installationToken,
-  //   'POST',
-  //   `${repoPath}/git/refs`,
-  //   {
-  //     ref: `refs/heads/${branchName}`,
-  //     sha: commit.sha,
-  //   }
-  // );
+  // console.log(treeEntries);
 
-  // const pullRequest = await githubApiRequest<PullRequestResponse>(
-  //   installationToken,
-  //   'POST',
-  //   `${repoPath}/pulls`,
-  //   {
-  //     title: `Add skill: ${skillName}`,
-  //     head: branchName,
-  //     base: baseBranch,
-  //     body: [
-  //       `Submitted via enskill by @${submittedBy}.`,
-  //       '',
-  //       `Skill: \`${skillName}\``,
-  //       `Path: \`${skillRootDir}/${skillName}\``,
-  //     ].join('\n'),
-  //   }
-  // );
+  // Create a new tree based on the base tree, adding the new blob entries.
+  // Basically, branching out/extending/continuing the base tree.
+  const tree = await githubApiRequest<SHA>(
+    installationToken,
+    'POST',
+    `${repoPath}/git/trees`,
+    { base_tree: baseTreeSha, tree: treeEntries }
+  );
+
+  // console.log(tree);
+
+  // Create a new commit based on the new tree, using the base commit as the parent commit.
+  const commit = await githubApiRequest<SHA>(
+    installationToken,
+    'POST',
+    `${repoPath}/git/commits`,
+    {
+      message: `feat(registry): publish skill ${SKILL_NAME}`,
+      tree: tree.sha,
+      parents: [baseCommitSha],
+    }
+  );
+
+  // console.log(commit);
+
+  // Create a new branch, attaching the new commit to it.
+  await githubApiRequest(installationToken, 'POST', `${repoPath}/git/refs`, {
+    ref: `refs/heads/${branchName}`,
+    sha: commit.sha,
+  });
+
+  const pullRequest = await githubApiRequest<PullRequestResponse>(
+    installationToken,
+    'POST',
+    `${repoPath}/pulls`,
+    {
+      title: `Add skill: ${SKILL_NAME}`,
+      head: branchName,
+      base: BASE_BRANCH,
+      body: [
+        `Submitted via enskill by @${SUBMITTED_BY}.`,
+        '',
+        `Skill: \`${SKILL_NAME}\``,
+        `Path: \`${SKILL_ROOT_DIR}/${SKILL_NAME}\``,
+      ].join('\n'),
+    }
+  );
+
+  console.log(pullRequest);
 
   // console.log('');
   // console.log('Pull request created:');

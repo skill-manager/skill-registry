@@ -9,7 +9,12 @@ async function main(): Promise<void> {
     installationId: env.GITHUB_APP_INSTALLATION_ID!,
   });
 
-  const token = await auth.createAccessToken();
+  const token = await auth.createAccessToken({
+    permissions: {
+      contents: 'write',
+      pull_requests: 'write',
+    },
+  });
 
   console.log(`Installation token: ${token}`);
 }
